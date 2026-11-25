@@ -87,6 +87,7 @@ export class GameEngine {
   private playerThrustTimer = 0;
   private playerLeftPunchTimer = 0;
   private playerWhooshCooldown = 0;
+  private pendingJumpPress = false;
   private playerSelectedRightWeapon: WeaponType = 'longsword';
   private playerSelectedLeftWeapon: WeaponType | null = 'shield';
 
@@ -331,7 +332,8 @@ export class GameEngine {
     const opponents = rules.getInitialOpponents(this.settings.quality);
     opponents.forEach((opp, idx) => this.spawnOpponent(opp, idx + 1));
 
-    this.camRig.resetBehind(0, new THREE.Vector3(0, 0.94, 4.2));
+    this.pendingJumpPress = false;
+    this.camRig.resetBehind(0, new THREE.Vector3(0, 0.92, 4.2));
     this.input.setEnabled(true);
     this.setStatus(
       mode === 'training'
@@ -555,17 +557,25 @@ export class GameEngine {
     const snap = this.input.consumeSnapshot(dt);
     this.camRig.addInputDelta(snap.yawDelta, snap.pitchDelta);
 
+    if (snap.jumpJustPressed) this.pendingJumpPress = true;
     if (snap.thrustJustPressed) this.playerThrustTimer = 0.28;
     if (this.playerThrustTimer > 0) this.playerThrustTimer = Math.max(0, this.playerThrustTimer - dt);
     if (this.playerLeftPunchTimer > 0) this.playerLeftPunchTimer = Math.max(0, this.playerLeftPunchTimer - dt);
     if (this.playerWhooshCooldown > 0) this.playerWhooshCooldown = Math.max(0, this.playerWhooshCooldown - dt);
 
     if (snap.attackJustPressed && !this.player.isDead) {
-      this.player.armController.triggerAutoSwing(Math.random() > 0.5 ? 1 : -1, 0.34);
+      if (snap.swingSpeed < 0.12 && !snap.weaponManipActive) {
+        const tapDir = snap.swingX > 0.08 ? -1 : snap.swingX < -0.08 ? 1 : Math.random() > 0.5 ? 1 : -1;
+        this.player.armController.triggerAutoSwing(tapDir, 0.24);
+      } else {
+        this.player.armController.cancelAutoSwing();
+      }
       if (this.playerWhooshCooldown <= 0) {
         this.audio.playWhoosh(6.5);
         this.playerWhooshCooldown = 0.28;
       }
+    } else if (snap.swingSpeed >= 0.12 || snap.weaponManipActive) {
+      this.player.armController.cancelAutoSwing();
     }
 
     // Physical hand grab / release controls (Q = left hand, E = right hand, R = recover/reset)
@@ -598,15 +608,21 @@ export class GameEngine {
     const moveWorldZ = _moveRight.z * snap.moveX + _moveForward.z * snap.moveY;
 
     const playerIntent: FighterControlIntent = {
-      moveX: moveWorldX,
-      moveZ: moveWorldZ,
+      moveX: Math.abs(moveWorldX) < 1e-6 ? 0 : moveWorldX,
+      moveZ: Math.abs(moveWorldZ) < 1e-6 ? 0 : moveWorldZ,
       facingYaw: this.camRig.yaw,
-      jumpPressed: snap.jumpJustPressed,
+      jumpPressed: this.pendingJumpPress,
       arm: {
         aimYaw: this.camRig.yaw,
         aimPitch: this.camRig.pitch - 0.18,
         swingX: snap.swingX,
         swingY: snap.swingY,
+        swingSpeed: snap.swingSpeed,
+        weaponRoll: snap.weaponRoll,
+        weaponPitchOffset: snap.weaponPitchOffset,
+        weaponManipActive: snap.weaponManipActive,
+        guardX: snap.guardX,
+        guardY: snap.guardY,
         attackHeld: snap.attackHeld,
         defendHeld: snap.defendHeld,
         thrustActive: this.playerThrustTimer > 0,
@@ -618,13 +634,14 @@ export class GameEngine {
     const aiIntents = new Map<string, FighterControlIntent>();
     for (const [id, ai] of this.aiControllers.entries()) {
       if (this.mode === 'training' && this.trainingOpponentPaused) {
+        const oppYaw = ai.fighter.getFacingYaw();
         aiIntents.set(id, {
           moveX: 0,
           moveZ: 0,
-          facingYaw: ai.fighter.bodies.pelvis.rotation().y,
+          facingYaw: oppYaw,
           jumpPressed: false,
           arm: {
-            aimYaw: 0,
+            aimYaw: oppYaw,
             aimPitch: 0,
             swingX: 0,
             swingY: 0,
@@ -642,7 +659,11 @@ export class GameEngine {
     this.physics.step(
       dt,
       (subDt) => {
-        if (this.player) this.player.updatePhysics(subDt, playerIntent);
+        if (this.player) {
+          playerIntent.jumpPressed = this.pendingJumpPress;
+          this.player.updatePhysics(subDt, playerIntent);
+          this.pendingJumpPress = false;
+        }
         for (const [id, ai] of this.aiControllers.entries()) {
           const intent = aiIntents.get(id);
           if (intent) ai.fighter.updatePhysics(subDt, intent);

@@ -42,7 +42,7 @@ export class FighterAI {
     public readonly config: AIConfig,
   ) {
     this.circleDir = Math.random() > 0.5 ? 1 : -1;
-    this.facingYaw = fighter.bodies.pelvis.rotation().y;
+    this.facingYaw = fighter.getFacingYaw();
   }
 
   public update(

@@ -63,14 +63,18 @@ export const ControlsModal: React.FC<ControlsModalProps> = ({
 
         <div className="bg-[#110e0c] border border-[#382d23] rounded p-3 mb-4 text-xs text-[#cfc3ad] space-y-1.5">
           <div>
-            <strong className="text-[#e6c373]">Mouse Look &amp; Swing:</strong> Move mouse to aim. Hold{' '}
-            <strong>Left Mouse</strong> and sweep mouse to drive physical blade arcs; double-click LMB (or press <strong>F</strong>) to thrust.
+            <strong className="text-[#e6c373]">Direct Weapon Control:</strong> Hold{' '}
+            <strong>Left Mouse</strong> (camera locks) and move mouse to swing or position your blade directly; double-click LMB or press <strong>F</strong> to thrust.
           </div>
           <div>
-            <strong className="text-[#e6c373]">Defense:</strong> Hold <strong>Right Mouse</strong> to raise your shield or parry guard.
+            <strong className="text-[#e6c373]">Free Stance &amp; Wrist Rotation:</strong> Hold{' '}
+            <strong>Alt</strong> (or toggle <strong>V</strong>) + Mouse for free weapon positioning; scroll <strong>Mouse Wheel</strong> or hold <strong>Middle Mouse</strong> to rotate blade angle &amp; pitch.
           </div>
           <div>
-            <strong className="text-[#e6c373]">Mobile Touch:</strong> Left virtual thumbstick moves; right touch pad turns camera &amp; steers swings; action buttons attack, guard, grab, and jump.
+            <strong className="text-[#e6c373]">Defense:</strong> Hold <strong>Right Mouse</strong> + move mouse to angle your shield or parry guard.
+          </div>
+          <div>
+            <strong className="text-[#e6c373]">Mobile Touch:</strong> Left thumbstick moves; drag on <strong>STRIKE</strong> or <strong>GUARD</strong> to steer swings &amp; blocks; toggle <strong>Aim</strong> for free weapon pad control.
           </div>
         </div>
 

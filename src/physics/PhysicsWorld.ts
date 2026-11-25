@@ -61,7 +61,7 @@ export class PhysicsWorld {
     this.fixedDt = 1 / hz;
     this.maxSubsteps = maxSubsteps;
     this.world.timestep = this.fixedDt;
-    this.world.numSolverIterations = 8;
+    this.world.numSolverIterations = 10;
     this.eventQueue = new RAPIER.EventQueue(true);
   }
 

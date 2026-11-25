@@ -89,9 +89,11 @@ export class CombatSystem {
 
   private isOnCooldown(key: string, minGap = 0.2): boolean {
     const prev = this.pairCooldown.get(key) ?? -10;
-    if (this.elapsedTime - prev < minGap) return true;
+    return this.elapsedTime - prev < minGap;
+  }
+
+  private markCooldown(key: string): void {
     this.pairCooldown.set(key, this.elapsedTime);
-    return false;
   }
 
   private handleContactPair(
@@ -122,6 +124,7 @@ export class CombatSystem {
       _relVel.copy(w1.sweetSpotVelocity).sub(w2.sweetSpotVelocity);
       const impactSpeed = _relVel.length();
       if (impactSpeed < 1.8 && forceMag < 25) return;
+      this.markCooldown(key);
 
       const midPos = {
         x: (w1.sweetSpotWorld.x + w2.sweetSpotWorld.x) * 0.5,
@@ -209,6 +212,7 @@ export class CombatSystem {
       const impactSpeed = _relVel.length();
 
       if (impactSpeed < 2.2) return;
+      this.markCooldown(key);
 
       // Cutting direction & thrust alignment approximation
       _v2.copy(_relVel).normalize();
@@ -244,7 +248,7 @@ export class CombatSystem {
 
       _impulse
         .copy(_v2)
-        .multiplyScalar(Math.min(26, impactSpeed * weapon.spec.mass * 1.45));
+        .multiplyScalar(Math.min(40, impactSpeed * weapon.spec.mass * 1.85));
       _impulse.y += 2.0;
 
       const wasKnocked = defender.isKnockedDown;
@@ -295,6 +299,7 @@ export class CombatSystem {
 
       const speed = weapon.sweetSpotVelocity.length();
       if (speed < 2.0) return;
+      this.markCooldown(key);
 
       const dmg = Math.round(weapon.spec.baseDamage * THREE.MathUtils.clamp(speed / 8, 0.3, 1.5));
       this.particles.spawnDust(weapon.sweetSpotWorld, 7);
