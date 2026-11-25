@@ -1,0 +1,6 @@
+{
+  "name": "Medieval Blood Arena",
+  "description": "Physics-driven 3D medieval melee combat simulation with active ragdoll fighters, independent articulated arm and grip controls, and physical weapon collisions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
