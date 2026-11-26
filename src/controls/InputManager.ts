@@ -30,6 +30,7 @@ export interface InputSnapshot {
   defendHeld: boolean;
   thrustJustPressed: boolean;
   attackJustPressed: boolean;
+  attackQuickTap: boolean;
   jumpJustPressed: boolean;
   leftHandJustPressed: boolean;
   rightHandJustPressed: boolean;
@@ -47,6 +48,10 @@ export class InputManager {
   private weaponFocusToggled = false;
 
   private attackJustPressed = false;
+  private attackQuickTap = false;
+  private attackDownTimeMs = 0;
+  private attackDragPx = 0;
+  private weaponSettleHoldTimer = 0;
   private thrustJustPressed = false;
   private jumpJustPressed = false;
   private leftHandJustPressed = false;
@@ -147,17 +152,27 @@ export class InputManager {
     this.yawDelta = 0;
     this.pitchDelta = 0;
     this.rawSweepAccum = 0;
+    this.attackDragPx = 0;
+    this.attackQuickTap = false;
   }
 
   // Mobile button triggers
   public setMobileAttack(held: boolean): void {
     if (held && !this.mobileAttackHeld) {
       this.attackJustPressed = true;
-      const now = performance.now();
+      this.attackDownTimeMs = performance.now();
+      this.attackDragPx = 0;
+      const now = this.attackDownTimeMs;
       if (now - this.lastAttackClickTime < 280) {
         this.thrustJustPressed = true;
       }
       this.lastAttackClickTime = now;
+    } else if (!held && this.mobileAttackHeld) {
+      const heldMs = performance.now() - this.attackDownTimeMs;
+      if (heldMs < 190 && this.attackDragPx < 14) {
+        this.attackQuickTap = true;
+      }
+      this.weaponSettleHoldTimer = 0.24;
     }
     this.mobileAttackHeld = held;
   }
@@ -183,6 +198,7 @@ export class InputManager {
 
   public addTouchWeaponDelta(dx: number, dy: number): void {
     const sens = CONTROL_TUNING.input.mobileWeaponSensitivity * this.sensitivity;
+    this.attackDragPx += Math.hypot(dx, dy);
     this.swingX = Math.max(-1, Math.min(1, this.swingX + dx * sens));
     this.swingY = Math.max(-1, Math.min(1, this.swingY - dy * sens));
     this.rawSweepAccum += Math.hypot(dx, dy) * sens;
@@ -251,22 +267,26 @@ export class InputManager {
     const weaponManipActive =
       altHeld || this.middleHeldMouse || this.weaponFocusToggled || this.mobileWeaponFocus;
 
-    // Gentle spring return only when neither attacking nor holding free weapon manipulation
-    if (!attackHeld && !weaponManipActive) {
-      const decay = Math.exp(-5.5 * dt);
+    if (attackHeld || weaponManipActive) {
+      this.weaponSettleHoldTimer = 0.24;
+    } else if (this.weaponSettleHoldTimer > 0) {
+      this.weaponSettleHoldTimer = Math.max(0, this.weaponSettleHoldTimer - dt);
+    } else {
+      // Soft natural guard settle after a brief pause (never violently snaps back between cuts)
+      const decay = Math.exp(-1.85 * dt);
       this.swingX *= decay;
       this.swingY *= decay;
       this.weaponPitchOffset *= decay;
-      this.weaponRoll *= Math.exp(-1.2 * dt);
+      this.weaponRoll *= Math.exp(-0.85 * dt);
     }
 
     if (!defendHeld) {
-      const guardDecay = Math.exp(-7 * dt);
+      const guardDecay = Math.exp(-6.5 * dt);
       this.guardX *= guardDecay;
       this.guardY *= guardDecay;
     }
 
-    const swingSpeed = dt > 1e-4 ? Math.min(2.5, this.rawSweepAccum / Math.max(dt, 1 / 120) * 0.14) : 0;
+    const swingSpeed = dt > 1e-4 ? Math.min(2.5, (this.rawSweepAccum / Math.max(dt, 1 / 120)) * 0.14) : 0;
 
     const snap: InputSnapshot = {
       moveX,
@@ -285,6 +305,7 @@ export class InputManager {
       defendHeld,
       thrustJustPressed: this.thrustJustPressed,
       attackJustPressed: this.attackJustPressed,
+      attackQuickTap: this.attackQuickTap,
       jumpJustPressed: this.jumpJustPressed,
       leftHandJustPressed: this.leftHandJustPressed,
       rightHandJustPressed: this.rightHandJustPressed,
@@ -296,6 +317,7 @@ export class InputManager {
     this.rawSweepAccum = 0;
     this.thrustJustPressed = false;
     this.attackJustPressed = false;
+    this.attackQuickTap = false;
     this.jumpJustPressed = false;
     this.leftHandJustPressed = false;
     this.rightHandJustPressed = false;
@@ -342,14 +364,16 @@ export class InputManager {
   private onMouseDown(e: MouseEvent): void {
     if (!this.enabled) return;
 
-    if (!this.isPointerLocked && e.button === 0) {
+    if (!this.isPointerLocked && (e.button === 0 || e.button === 1 || e.button === 2)) {
       this.requestPointerLock();
     }
 
     if (e.button === 0) {
       this.attackHeldMouse = true;
       this.attackJustPressed = true;
-      const now = performance.now();
+      this.attackDownTimeMs = performance.now();
+      this.attackDragPx = 0;
+      const now = this.attackDownTimeMs;
       if (now - this.lastAttackClickTime < 260) {
         this.thrustJustPressed = true;
       }
@@ -363,14 +387,31 @@ export class InputManager {
   }
 
   private onMouseUp(e: MouseEvent): void {
-    if (e.button === 0) this.attackHeldMouse = false;
+    if (e.button === 0) {
+      if (this.attackHeldMouse) {
+        const heldMs = performance.now() - this.attackDownTimeMs;
+        if (heldMs < 190 && this.attackDragPx < 14) {
+          this.attackQuickTap = true;
+        }
+        this.weaponSettleHoldTimer = 0.24;
+      }
+      this.attackHeldMouse = false;
+    }
     if (e.button === 1) this.middleHeldMouse = false;
     if (e.button === 2) this.defendHeldMouse = false;
   }
 
   private onMouseMove(e: MouseEvent): void {
     if (!this.enabled) return;
-    if (!this.isPointerLocked && !this.attackHeldMouse && !this.defendHeldMouse && !this.middleHeldMouse) {
+    const altHeld = this.heldKeys.has('AltLeft') || this.heldKeys.has('AltRight');
+    if (
+      !this.isPointerLocked &&
+      !this.attackHeldMouse &&
+      !this.defendHeldMouse &&
+      !this.middleHeldMouse &&
+      !altHeld &&
+      !this.weaponFocusToggled
+    ) {
       return;
     }
 
@@ -390,7 +431,6 @@ export class InputManager {
       return;
     }
 
-    const altHeld = this.heldKeys.has('AltLeft') || this.heldKeys.has('AltRight');
     const camSens = inp.cameraMouseSensitivity * this.sensitivity;
     const wpnSens = inp.weaponMouseSensitivity * this.sensitivity;
     const rotSens = inp.weaponRotMouseSensitivity * this.sensitivity;
@@ -401,6 +441,7 @@ export class InputManager {
       this.weaponPitchOffset = Math.max(-0.85, Math.min(0.85, this.weaponPitchOffset - dy * rotSens));
     } else if (this.attackHeldMouse) {
       // Pure direct weapon swing & positioning with camera locked (zero camera fight)
+      this.attackDragPx += Math.hypot(dx, dy);
       this.swingX = Math.max(-1, Math.min(1, this.swingX + dx * wpnSens));
       this.swingY = Math.max(-1, Math.min(1, this.swingY - dy * wpnSens));
       this.rawSweepAccum += Math.hypot(dx, dy) * wpnSens;

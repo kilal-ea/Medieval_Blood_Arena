@@ -16,6 +16,12 @@ export const CollisionBit = {
   FIGHTER_4: 0x0040,
   FIGHTER_5: 0x0080,
   DUMMY: 0x0100,
+  HELD_WEAPON_0: 0x0200,
+  HELD_WEAPON_1: 0x0400,
+  HELD_WEAPON_2: 0x0800,
+  HELD_WEAPON_3: 0x1000,
+  HELD_WEAPON_4: 0x2000,
+  HELD_WEAPON_5: 0x4000,
 } as const;
 
 export const ALL_FIGHTERS_MASK =
@@ -25,6 +31,19 @@ export const ALL_FIGHTERS_MASK =
   CollisionBit.FIGHTER_3 |
   CollisionBit.FIGHTER_4 |
   CollisionBit.FIGHTER_5;
+
+export const ALL_HELD_WEAPONS_MASK =
+  CollisionBit.HELD_WEAPON_0 |
+  CollisionBit.HELD_WEAPON_1 |
+  CollisionBit.HELD_WEAPON_2 |
+  CollisionBit.HELD_WEAPON_3 |
+  CollisionBit.HELD_WEAPON_4 |
+  CollisionBit.HELD_WEAPON_5;
+
+export function getHeldWeaponBit(fighterCollisionBit: number): number {
+  const slotRatio = Math.max(1, Math.round(fighterCollisionBit / CollisionBit.FIGHTER_0));
+  return (CollisionBit.HELD_WEAPON_0 * slotRatio) & ALL_HELD_WEAPONS_MASK;
+}
 
 export function makeCollisionGroups(membership: number, filter: number): number {
   return ((membership & 0xffff) << 16) | (filter & 0xffff);

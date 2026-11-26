@@ -2,7 +2,9 @@ import * as THREE from 'three';
 import { RAPIER } from '../physics/RapierLoader';
 import {
   ALL_FIGHTERS_MASK,
+  ALL_HELD_WEAPONS_MASK,
   CollisionBit,
+  getHeldWeaponBit,
   makeCollisionGroups,
   type PhysicsWorld,
 } from '../physics/PhysicsWorld';
@@ -72,7 +74,11 @@ export class WeaponInstance {
 
     const defaultGroups = makeCollisionGroups(
       CollisionBit.WEAPON,
-      CollisionBit.ENVIRONMENT | CollisionBit.WEAPON | ALL_FIGHTERS_MASK | CollisionBit.DUMMY,
+      CollisionBit.ENVIRONMENT |
+        CollisionBit.WEAPON |
+        ALL_HELD_WEAPONS_MASK |
+        ALL_FIGHTERS_MASK |
+        CollisionBit.DUMMY,
     );
 
     if (this.spec.isShield) {
@@ -156,11 +162,17 @@ export class WeaponInstance {
     this.heldSide = side;
     this.gripJoint = joint;
 
-    // Exclude collisions with the wielder's own skeleton while keeping opponent/weapon/env collisions
+    // Exclude collisions with the wielder's own skeleton and own offhand weapon/shield
+    const ownWeaponBit = getHeldWeaponBit(fighterCollisionBit);
     const filter =
-      (CollisionBit.ENVIRONMENT | CollisionBit.WEAPON | ALL_FIGHTERS_MASK | CollisionBit.DUMMY) &
-      ~fighterCollisionBit;
-    const groups = makeCollisionGroups(CollisionBit.WEAPON, filter);
+      (CollisionBit.ENVIRONMENT |
+        CollisionBit.WEAPON |
+        ALL_HELD_WEAPONS_MASK |
+        ALL_FIGHTERS_MASK |
+        CollisionBit.DUMMY) &
+      ~fighterCollisionBit &
+      ~ownWeaponBit;
+    const groups = makeCollisionGroups(ownWeaponBit, filter);
 
     for (const col of this.colliders) {
       col.setCollisionGroups(groups);
@@ -191,7 +203,11 @@ export class WeaponInstance {
 
     const groups = makeCollisionGroups(
       CollisionBit.WEAPON,
-      CollisionBit.ENVIRONMENT | CollisionBit.WEAPON | ALL_FIGHTERS_MASK | CollisionBit.DUMMY,
+      CollisionBit.ENVIRONMENT |
+        CollisionBit.WEAPON |
+        ALL_HELD_WEAPONS_MASK |
+        ALL_FIGHTERS_MASK |
+        CollisionBit.DUMMY,
     );
     for (const col of this.colliders) {
       if (!col.isValid()) continue;

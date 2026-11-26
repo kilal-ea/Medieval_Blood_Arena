@@ -25,49 +25,82 @@ const OPPONENT_ARCHETYPES: Array<{
   name: string;
   rightWeapon: WeaponType;
   leftWeapon: WeaponType | null;
-  tunicColor: number;
-  metalTint: number;
-  armorTier: 'light' | 'medium' | 'heavy';
+  appearance: FighterAppearance;
 }> = [
   {
     name: 'Militia Swordsman',
     rightWeapon: 'arming_sword',
     leftWeapon: null,
-    tunicColor: 0x3b4d36,
-    metalTint: 0x9aa2ab,
-    armorTier: 'light',
+    appearance: {
+      tunicColor: 0x3b4d36,
+      secondaryColor: 0x8f7e58,
+      metalTint: 0x9aa2ab,
+      armorTier: 'light',
+      helmStyle: 'kettle',
+      skinTone: 0xd4a483,
+      hairColor: 0x4c301c,
+      beardStyle: 'stubble',
+    },
   },
   {
     name: 'Shield-Bearer',
     rightWeapon: 'mace',
     leftWeapon: 'shield',
-    tunicColor: 0x263f63,
-    metalTint: 0xb6bec7,
-    armorTier: 'medium',
+    appearance: {
+      tunicColor: 0x263f63,
+      secondaryColor: 0xb89c5e,
+      metalTint: 0xb6bec7,
+      armorTier: 'medium',
+      helmStyle: 'spangenhelm',
+      skinTone: 0xc89572,
+      hairColor: 0x261a14,
+      beardStyle: 'full',
+    },
   },
   {
     name: 'Iron Vanguard',
     rightWeapon: 'longsword',
     leftWeapon: null,
-    tunicColor: 0x6b2020,
-    metalTint: 0xd0d6de,
-    armorTier: 'heavy',
+    appearance: {
+      tunicColor: 0x6b2020,
+      secondaryColor: 0xc2b293,
+      metalTint: 0xd0d6de,
+      armorTier: 'heavy',
+      helmStyle: 'barbute',
+      skinTone: 0xd9ad8e,
+      hairColor: 0x5c2b19,
+      beardStyle: 'goatee',
+    },
   },
   {
     name: 'Ravager Axeman',
     rightWeapon: 'battle_axe',
     leftWeapon: null,
-    tunicColor: 0x4f3224,
-    metalTint: 0x8e959e,
-    armorTier: 'medium',
+    appearance: {
+      tunicColor: 0x4f3224,
+      secondaryColor: 0x7e2824,
+      metalTint: 0x8e959e,
+      armorTier: 'medium',
+      helmStyle: 'open',
+      skinTone: 0xbc8662,
+      hairColor: 0x6b3a20,
+      beardStyle: 'full',
+    },
   },
   {
     name: 'Arena Champion',
     rightWeapon: 'longsword',
     leftWeapon: 'shield',
-    tunicColor: 0x5c1928,
-    metalTint: 0xe0d6b8,
-    armorTier: 'heavy',
+    appearance: {
+      tunicColor: 0x5c1928,
+      secondaryColor: 0xd1b369,
+      metalTint: 0xe0d6b8,
+      armorTier: 'heavy',
+      helmStyle: 'sallet',
+      skinTone: 0xcfa07e,
+      hairColor: 0x1e1815,
+      beardStyle: 'goatee',
+    },
   },
 ];
 
@@ -94,8 +127,13 @@ export function createModeRules(mode: GameModeId): ModeRules {
             maxHealth: 100,
             appearance: {
               tunicColor: 0x2c4b66,
+              secondaryColor: 0xc4b082,
               metalTint: 0xb0b8c0,
               armorTier: 'medium',
+              helmStyle: 'kettle',
+              skinTone: 0xd6a888,
+              hairColor: 0x57361f,
+              beardStyle: 'stubble',
             },
             ai: {
               aggression: 0.42,
@@ -117,8 +155,13 @@ export function createModeRules(mode: GameModeId): ModeRules {
             maxHealth: 120,
             appearance: {
               tunicColor: 0x6e1f24,
+              secondaryColor: 0xc9a959,
               metalTint: 0xcfd5dc,
               armorTier: 'heavy',
+              helmStyle: 'barbute',
+              skinTone: 0xcf9b78,
+              hairColor: 0x2d1e15,
+              beardStyle: 'goatee',
             },
             ai: {
               aggression: 0.72,
@@ -150,11 +193,7 @@ export function createModeRules(mode: GameModeId): ModeRules {
           rightWeapon: arch.rightWeapon,
           leftWeapon: arch.leftWeapon,
           maxHealth: 95 + i * 15,
-          appearance: {
-            tunicColor: arch.tunicColor,
-            metalTint: arch.metalTint,
-            armorTier: arch.armorTier,
-          },
+          appearance: { ...arch.appearance },
           ai: {
             aggression: 0.58 + i * 0.08,
             parrySkill: 0.45 + i * 0.08,
@@ -175,11 +214,7 @@ export function createModeRules(mode: GameModeId): ModeRules {
         rightWeapon: arch.rightWeapon,
         leftWeapon: arch.leftWeapon,
         maxHealth: Math.round(90 + (wave - 1) * 18),
-        appearance: {
-          tunicColor: arch.tunicColor,
-          metalTint: arch.metalTint,
-          armorTier: arch.armorTier,
-        },
+        appearance: { ...arch.appearance },
         ai: {
           aggression: Math.min(0.95, 0.48 + scale * 0.45),
           parrySkill: Math.min(0.88, 0.35 + scale * 0.5),

@@ -6,6 +6,7 @@ import {
 } from '../physics/JointControllers';
 import {
   ALL_FIGHTERS_MASK,
+  ALL_HELD_WEAPONS_MASK,
   CollisionBit,
   makeCollisionGroups,
   type PhysicsWorld,
@@ -19,6 +20,16 @@ import {
   extractArmSegments,
   type ArmControlInput,
 } from './ArmHandController';
+
+export type LocomotionGaitState =
+  | 'idle'
+  | 'starting'
+  | 'walking'
+  | 'running'
+  | 'stopping'
+  | 'turning'
+  | 'staggering'
+  | 'recovering';
 
 export interface FighterControlIntent {
   moveX: number; // -1..1 in world XZ or camera-relative converted before passing
@@ -79,13 +90,18 @@ export class ActiveRagdoll {
   public isKnockedDown = false;
   public isDead = false;
   public staggerTimer = 0;
+  public gaitState: LocomotionGaitState = 'idle';
 
   private knockdownTimer = 0;
   private recoveryProgress = 0;
   private walkPhase = 0;
+  private strideBlend = 0;
   private jumpCooldown = 0;
   private hitFlashTimer = 0;
-  private currentFootFriction: number = RAGDOLL_TUNING.footFrictionIdle;
+  private currentFootFrictionL: number = RAGDOLL_TUNING.footFrictionIdle;
+  private currentFootFrictionR: number = RAGDOLL_TUNING.footFrictionIdle;
+  private currentSlipL = false;
+  private currentSlipR = false;
   private stanceAnchorX: number | null = null;
   private stanceAnchorZ: number | null = null;
   private smoothedYaw = 0;
@@ -119,25 +135,76 @@ export class ActiveRagdoll {
     const filterMask =
       CollisionBit.ENVIRONMENT |
       CollisionBit.WEAPON |
+      ALL_HELD_WEAPONS_MASK |
       CollisionBit.DUMMY |
       (ALL_FIGHTERS_MASK & ~this.collisionBit);
     const groups = makeCollisionGroups(this.collisionBit, filterMask);
 
     const yawQuat = new THREE.Quaternion().setFromAxisAngle(_up, options.facingYaw);
+    const spawnEuler = new THREE.Euler();
+    const spawnLocalQuat = new THREE.Quaternion();
+    const spawnWorldQuat = new THREE.Quaternion();
+    const spawnParentQuat = new THREE.Quaternion();
+    const spawnParentAnchor = new THREE.Vector3();
+    const spawnChildAnchor = new THREE.Vector3();
+    const spawnPos = new THREE.Vector3();
+
+    const legPoseAngles: Partial<Record<BodyPartId, [number, number, number]>> = {
+      thighL: [0.23, 0.06, -0.02],
+      lowerLegL: [-0.11, 0.06, -0.01],
+      footL: [0, 0.06, 0],
+      thighR: [-0.04, -0.14, 0.02],
+      lowerLegR: [-0.33, -0.14, 0.01],
+      footR: [0, -0.14, 0],
+    };
+
     let fingersL: THREE.Group | undefined;
     let fingersR: THREE.Group | undefined;
 
-    // 1. Create all 17 rigid bodies, colliders, and Three.js composite meshes
+    // 1. Create all 17 rigid bodies, colliders, and Three.js composite meshes in an exact combat-ready stance
     for (const partId of BODY_PART_ORDER) {
       const spec = ANATOMY_SPECS[partId];
-      const localOffset = new THREE.Vector3(...spec.initialOffset).applyQuaternion(yawQuat);
-      const wx = options.spawnPos.x + localOffset.x;
-      const wy = options.spawnPos.y + localOffset.y;
-      const wz = options.spawnPos.z + localOffset.z;
+      const poseAng = legPoseAngles[partId];
+      if (poseAng) {
+        spawnEuler.set(poseAng[0], poseAng[1], poseAng[2]);
+        spawnLocalQuat.setFromEuler(spawnEuler);
+        spawnWorldQuat.copy(yawQuat).multiply(spawnLocalQuat);
+      } else {
+        spawnWorldQuat.copy(yawQuat);
+      }
+
+      if (spec.parent && spec.anchorParent && spec.anchorChild && this.bodies[spec.parent]) {
+        const parentBody = this.bodies[spec.parent];
+        const pp = parentBody.translation();
+        const pr = parentBody.rotation();
+        spawnParentQuat.set(pr.x, pr.y, pr.z, pr.w);
+        spawnParentAnchor.set(...spec.anchorParent).applyQuaternion(spawnParentQuat);
+        spawnChildAnchor.set(...spec.anchorChild).applyQuaternion(spawnWorldQuat);
+        spawnPos.set(
+          pp.x + spawnParentAnchor.x - spawnChildAnchor.x,
+          pp.y + spawnParentAnchor.y - spawnChildAnchor.y,
+          pp.z + spawnParentAnchor.z - spawnChildAnchor.z,
+        );
+      } else {
+        const pelvisYOffset = partId === 'pelvis' ? -0.02 : 0;
+        spawnPos
+          .set(spec.initialOffset[0], spec.initialOffset[1] + pelvisYOffset, spec.initialOffset[2])
+          .applyQuaternion(yawQuat)
+          .add(options.spawnPos);
+      }
+
+      const wx = spawnPos.x;
+      const wy = spawnPos.y;
+      const wz = spawnPos.z;
 
       const rbDesc = RAPIER.RigidBodyDesc.dynamic()
         .setTranslation(wx, wy, wz)
-        .setRotation({ x: yawQuat.x, y: yawQuat.y, z: yawQuat.z, w: yawQuat.w })
+        .setRotation({
+          x: spawnWorldQuat.x,
+          y: spawnWorldQuat.y,
+          z: spawnWorldQuat.z,
+          w: spawnWorldQuat.w,
+        })
         .setLinearDamping(0.35)
         .setAngularDamping(1.1);
       const body = physics.world.createRigidBody(rbDesc);
@@ -173,7 +240,7 @@ export class ActiveRagdoll {
 
       const segVisual = createSegmentMesh(partId, options.appearance);
       segVisual.group.position.set(wx, wy, wz);
-      segVisual.group.quaternion.copy(yawQuat);
+      segVisual.group.quaternion.copy(spawnWorldQuat);
       scene.add(segVisual.group);
       this.flashMaterials.push(...segVisual.flashMaterials);
 
@@ -351,15 +418,37 @@ export class ActiveRagdoll {
   }
 
   private setFootFriction(friction: number, slipLow = false): void {
-    if (Math.abs(this.currentFootFriction - friction) < 0.01) return;
-    this.currentFootFriction = friction;
-    const rule = slipLow
-      ? RAPIER.CoefficientCombineRule.Min
-      : RAPIER.CoefficientCombineRule.Average;
-    this.colliders.footL.setFriction(friction);
-    this.colliders.footR.setFriction(friction);
-    this.colliders.footL.setFrictionCombineRule(rule);
-    this.colliders.footR.setFrictionCombineRule(rule);
+    this.setFootFrictionPerFoot(friction, slipLow, friction, slipLow);
+  }
+
+  private setFootFrictionPerFoot(
+    leftFriction: number,
+    leftSlip: boolean,
+    rightFriction: number,
+    rightSlip: boolean,
+  ): void {
+    if (
+      Math.abs(this.currentFootFrictionL - leftFriction) >= 0.01 ||
+      this.currentSlipL !== leftSlip
+    ) {
+      this.currentFootFrictionL = leftFriction;
+      this.currentSlipL = leftSlip;
+      this.colliders.footL.setFriction(leftFriction);
+      this.colliders.footL.setFrictionCombineRule(
+        leftSlip ? RAPIER.CoefficientCombineRule.Min : RAPIER.CoefficientCombineRule.Average,
+      );
+    }
+    if (
+      Math.abs(this.currentFootFrictionR - rightFriction) >= 0.01 ||
+      this.currentSlipR !== rightSlip
+    ) {
+      this.currentFootFrictionR = rightFriction;
+      this.currentSlipR = rightSlip;
+      this.colliders.footR.setFriction(rightFriction);
+      this.colliders.footR.setFrictionCombineRule(
+        rightSlip ? RAPIER.CoefficientCombineRule.Min : RAPIER.CoefficientCombineRule.Average,
+      );
+    }
   }
 
   public updatePhysics(dt: number, intent: FighterControlIntent): void {
@@ -403,6 +492,7 @@ export class ActiveRagdoll {
 
     let muscleScale = 1;
     if (this.isKnockedDown) {
+      this.gaitState = 'recovering';
       this.stanceAnchorX = null;
       this.stanceAnchorZ = null;
       this.setFootFriction(RAGDOLL_TUNING.footFrictionRagdoll);
@@ -473,7 +563,7 @@ export class ActiveRagdoll {
       moveMag,
     );
 
-    // 3. Acceleration-Based Locomotion & Ground Stance Controller
+    // 3. Phase-Aware Stance/Swing Gait & Ground Stance Controller
     if (!this.isKnockedDown) {
       this.updateLocomotionController(
         dt,
@@ -484,6 +574,8 @@ export class ActiveRagdoll {
         pp.x,
         pp.y,
         pp.z,
+        footLP.y,
+        footRP.y,
         normMoveX,
         normMoveZ,
         moveMag,
@@ -494,7 +586,7 @@ export class ActiveRagdoll {
       );
     }
 
-    // 4. Independent Arm & Hand Controller (2-bone IK + filtered wrist/weapon control)
+    // 4. Independent Arm & Hand Controller (2-bone IK + chest-local filtered wrist/weapon control)
     this.armController.update(dt, intent.arm, muscleScale, staminaRatio);
   }
 
@@ -510,13 +602,26 @@ export class ActiveRagdoll {
     moveMag: number,
   ): void {
     const rot = CONTROL_TUNING.rotation;
+    const loco = CONTROL_TUNING.locomotion;
     const isTurning = Math.abs(turnRate) > 0.35;
-    const rotScale = muscleScale * (isTurning ? rot.bodyRotationDamping : 1.0);
+    const rotScale =
+      muscleScale * (isTurning ? rot.bodyRotationDamping : 1.0) * (this.strideBlend > 0.1 ? loco.balanceAssistGain : 1.0);
 
-    // Natural torso lean during active motion or guard/strike (zero bias when idle)
-    const combatPitch = intent.arm.attackHeld ? -0.045 : intent.arm.defendHeld ? 0.035 : 0;
-    const movePitch = this.smoothedMoveMag > 0.04 ? -localFwd * 0.048 * this.smoothedMoveMag : 0;
-    const moveRoll = this.smoothedMoveMag > 0.04 ? -localRight * 0.038 * this.smoothedMoveMag : 0;
+    // Natural athletic forward lean & coiled guard angle in combat stance, transitioning smoothly into gait/strikes
+    const idleWeight = 1 - Math.min(1, this.strideBlend);
+    const combatPitch = intent.arm.attackHeld
+      ? -0.095
+      : intent.arm.defendHeld
+        ? 0.02
+        : -0.075 * idleWeight;
+    const movePitch = this.smoothedMoveMag > 0.04 ? -localFwd * 0.052 * this.smoothedMoveMag : 0;
+    const turnBankRoll = isTurning ? THREE.MathUtils.clamp(-turnRate * 0.008 * (0.3 + this.smoothedMoveMag), -0.05, 0.05) : 0;
+    const moveRoll =
+      (this.smoothedMoveMag > 0.04 ? -localRight * 0.04 * this.smoothedMoveMag : 0) + turnBankRoll;
+
+    // Natural counter-rotation: upper torso gently counters hip swing while walking
+    const gaitCounterYaw =
+      this.strideBlend > 0.05 ? Math.sin(this.walkPhase) * 0.065 * this.strideBlend * Math.abs(localFwd) : 0;
 
     // Subtle upper-body follow-through toward active weapon sweep/position
     const weaponFollowYaw =
@@ -524,30 +629,33 @@ export class ActiveRagdoll {
         ? THREE.MathUtils.clamp(-intent.arm.swingX * rot.torsoWeaponFollowRad, -0.22, 0.22)
         : 0;
 
+    // Slight oblique combat angle: left shoulder leads slightly while right sword shoulder coils ready
+    const idleChestTurn = -0.09 * idleWeight * (intent.arm.defendHeld ? 0.55 : 1);
+
     // Subtle pelvis alignment toward strafe/diagonal movement without over-twisting spine
     let pelvisYaw = activeYaw;
-    if (moveMag > 0.15 && Math.abs(localRight) > 0.15 && !intent.arm.defendHeld) {
+    if (moveMag > 0.12 && Math.abs(localRight) > 0.12 && !intent.arm.defendHeld) {
       const strafeOffset = Math.atan2(-localRight, Math.max(0.35, Math.abs(localFwd)));
       const clampedTwist = THREE.MathUtils.clamp(
         strafeOffset * rot.walkTurnBlend,
-        -rot.maxSpineTwistRad * 0.6,
-        rot.maxSpineTwistRad * 0.6,
+        -rot.maxSpineTwistRad * 0.58,
+        rot.maxSpineTwistRad * 0.58,
       );
       pelvisYaw = wrapAngleRad(activeYaw + clampedTwist);
     }
 
     const chestYawOffset = THREE.MathUtils.clamp(
-      rawYawErr * 0.12 + weaponFollowYaw,
+      rawYawErr * 0.14 + weaponFollowYaw + gaitCounterYaw + idleChestTurn,
       -rot.maxSpineTwistRad,
       rot.maxSpineTwistRad,
     );
     const chestYaw = wrapAngleRad(activeYaw + chestYawOffset);
     const abdomenYaw = wrapAngleRad(activeYaw + chestYawOffset * 0.5);
     const headYaw = wrapAngleRad(
-      activeYaw + THREE.MathUtils.clamp(rawYawErr * rot.headLeadFactor, -0.32, 0.32),
+      activeYaw + THREE.MathUtils.clamp(rawYawErr * rot.headLeadFactor, -0.34, 0.34),
     );
 
-    _euler.set(0, pelvisYaw, 0);
+    _euler.set(0, pelvisYaw, moveRoll * 0.35);
     _pelvisTarget.setFromEuler(_euler);
     applyOrientationPDTorque(
       this.bodies.pelvis,
@@ -559,7 +667,7 @@ export class ActiveRagdoll {
       rotScale,
     );
 
-    _euler.set((combatPitch + movePitch) * 0.5, abdomenYaw, moveRoll * 0.5);
+    _euler.set((combatPitch + movePitch) * 0.5, abdomenYaw, moveRoll * 0.55);
     _torsoTarget.setFromEuler(_euler);
     applyOrientationPDTorque(
       this.bodies.abdomen,
@@ -617,6 +725,8 @@ export class ActiveRagdoll {
     px: number,
     py: number,
     pz: number,
+    footLY: number,
+    footRY: number,
     moveX: number,
     moveZ: number,
     moveMag: number,
@@ -649,7 +759,9 @@ export class ActiveRagdoll {
       if (!isInputMoving) {
         accelRate = loco.deceleration;
       } else if (currSpeed > 0.2) {
-        const dot = (this.currVelX * desiredVx + this.currVelZ * desiredVz) / (currSpeed * Math.max(0.01, baseTopSpeed));
+        const dot =
+          (this.currVelX * desiredVx + this.currVelZ * desiredVz) /
+          (currSpeed * Math.max(0.01, baseTopSpeed));
         if (dot < 0.35) accelRate = loco.directionChangeAccel;
       }
       const maxStep = accelRate * dt;
@@ -677,7 +789,24 @@ export class ActiveRagdoll {
 
     const pelvisVel = this.bodies.pelvis.linvel();
     const horizSpeed = Math.hypot(pelvisVel.x, pelvisVel.z);
-    const isTurningInPlace = !isMoving && Math.abs(turnRate) > 0.45;
+    const isTurningInPlace = !isMoving && Math.abs(turnRate) > 0.42;
+
+    // Update explicit Gait State Machine
+    if (this.staggerTimer > 0) {
+      this.gaitState = 'staggering';
+    } else if (isTurningInPlace) {
+      this.gaitState = 'turning';
+    } else if (!isInputMoving && smoothedSpeed > 0.06) {
+      this.gaitState = 'stopping';
+    } else if (isInputMoving && smoothedSpeed < 1.15) {
+      this.gaitState = 'starting';
+    } else if (isInputMoving && smoothedSpeed >= loco.walkSpeed + 0.35) {
+      this.gaitState = 'running';
+    } else if (isInputMoving) {
+      this.gaitState = 'walking';
+    } else {
+      this.gaitState = 'idle';
+    }
 
     if (isMoving || this.staggerTimer > 0 || isTurningInPlace) {
       this.stanceAnchorX = null;
@@ -709,25 +838,69 @@ export class ActiveRagdoll {
       }
     }
 
-    // Dynamic foot friction modulation: planted idle, smooth pivot turn, low-drag walk, free stagger
+    // Smooth stride blend & speed-coupled phase progression
+    const targetStrideBlend = isMoving
+      ? Math.min(1, smoothedSpeed / 0.85)
+      : isTurningInPlace
+        ? Math.min(0.55, Math.abs(turnRate) * 0.14)
+        : 0;
+    this.strideBlend = THREE.MathUtils.lerp(
+      this.strideBlend,
+      targetStrideBlend,
+      1 - Math.exp(-(isMoving ? 14 : 10) * dt),
+    );
+
+    if (isMoving && grounded) {
+      // Scale step cadence smoothly with physical ground velocity & stepLength
+      const speedNorm = Math.min(1, smoothedSpeed / loco.runSpeed);
+      const stepFreq = THREE.MathUtils.lerp(loco.stepFrequencyMin, loco.stepFrequencyMax, speedNorm);
+      this.walkPhase += dt * Math.PI * 2 * stepFreq;
+    } else if (isTurningInPlace && grounded) {
+      this.walkPhase += dt * Math.min(7.8, Math.abs(turnRate) * 2.1);
+    } else {
+      // Settle smoothly to double-stance neutral (k * PI) so feet don't freeze splayed mid-stride
+      const nearestNeutral = Math.round(this.walkPhase / Math.PI) * Math.PI;
+      this.walkPhase = THREE.MathUtils.lerp(this.walkPhase, nearestNeutral, 1 - Math.exp(-15 * dt));
+    }
+
+    const phaseL = this.walkPhase;
+    const phaseR = this.walkPhase + Math.PI;
+    const sL = Math.sin(phaseL);
+    const cL = Math.cos(phaseL);
+    const sR = Math.sin(phaseR);
+    const cR = Math.cos(phaseR);
+
+    // Smooth Swing (1) vs Stance (0) weighting: eliminates velocity-assist cliffs at knee/ankle
+    const swingWeightL = (isMoving || isTurningInPlace) ? THREE.MathUtils.clamp(cL, 0, 1) * this.strideBlend : 0;
+    const swingWeightR = (isMoving || isTurningInPlace) ? THREE.MathUtils.clamp(cR, 0, 1) * this.strideBlend : 0;
+
+    // Per-foot dynamic friction modulation: stance foot grips floor, swing foot clears effortlessly.
+    // Use Min combine rule while moving or decelerating so floor friction (0.95) never overrides swing/stance tuning.
     if (this.staggerTimer > 0) {
       this.setFootFriction(loco.footFrictionStagger, true);
-    } else if (isMoving) {
-      const walkFric = THREE.MathUtils.lerp(loco.footFrictionTurn, loco.footFrictionWalk, Math.min(1, this.smoothedMoveMag * 1.4));
-      this.setFootFriction(walkFric, true);
+    } else if (isMoving || horizSpeed > 0.18) {
+      const fricL = THREE.MathUtils.lerp(loco.footFrictionStance, loco.footFrictionSwing, swingWeightL);
+      const fricR = THREE.MathUtils.lerp(loco.footFrictionStance, loco.footFrictionSwing, swingWeightR);
+      this.setFootFrictionPerFoot(fricL, true, fricR, true);
     } else if (isTurningInPlace) {
-      this.setFootFriction(loco.footFrictionTurn, true);
+      const fricL = THREE.MathUtils.lerp(loco.footFrictionTurn, loco.footFrictionSwing, swingWeightL);
+      const fricR = THREE.MathUtils.lerp(loco.footFrictionTurn, loco.footFrictionSwing, swingWeightR);
+      this.setFootFrictionPerFoot(fricL, true, fricR, true);
     } else {
       this.setFootFriction(loco.footFrictionIdle, false);
     }
 
-    // Whole-body vertical leg extensor support when grounded
-    if (grounded) {
-      const targetPelvisY = THREE.MathUtils.lerp(
-        loco.idlePelvisHeight,
-        loco.walkPelvisHeight,
-        this.smoothedMoveMag,
-      );
+    // Whole-body vertical leg extensor support when grounded (with natural subtle gait cadence)
+    const footGroundedL = footLY < loco.groundContactThreshold;
+    const footGroundedR = footRY < loco.groundContactThreshold;
+    if (grounded || footGroundedL || footGroundedR) {
+      const stepBounce =
+        isMoving && this.strideBlend > 0.08
+          ? -Math.abs(Math.sin(this.walkPhase)) * 0.015 * this.strideBlend
+          : 0;
+      const targetPelvisY =
+        THREE.MathUtils.lerp(loco.idlePelvisHeight, loco.walkPelvisHeight, this.smoothedMoveMag) +
+        stepBounce;
       const vertForce = THREE.MathUtils.clamp(
         (loco.verticalSupportMass * ((targetPelvisY - py) * 48 - pelvisVel.y * 10.5) +
           loco.verticalFeedforwardN) *
@@ -738,7 +911,8 @@ export class ActiveRagdoll {
       this.bodies.pelvis.applyImpulse({ x: 0, y: vertForce * dt, z: 0 }, true);
     }
 
-    // Coordinated horizontal COM velocity drive across pelvis + abdomen + chest + legs
+    // Coordinated horizontal COM velocity drive across pelvis + abdomen + chest
+    // + smooth phase-weighted leg follow so swing foot leads cleanly without stretching joints
     if (this.staggerTimer <= 0) {
       const pelvisHorizRate = grounded ? loco.pelvisFollowRate : 1.8;
 
@@ -748,7 +922,7 @@ export class ActiveRagdoll {
         null,
         targetVz,
         pelvisHorizRate,
-        (grounded ? 720 : 120) * muscleScale,
+        (grounded ? 740 : 120) * muscleScale,
         dt,
       );
 
@@ -759,7 +933,7 @@ export class ActiveRagdoll {
           null,
           targetVz,
           loco.torsoFollowRate,
-          400 * muscleScale,
+          410 * muscleScale,
           dt,
         );
         applyLinearVelocityAssist(
@@ -768,62 +942,51 @@ export class ActiveRagdoll {
           null,
           targetVz,
           loco.torsoFollowRate,
-          600 * muscleScale,
+          620 * muscleScale,
           dt,
         );
         if (isMoving) {
-          applyLinearVelocityAssist(
-            this.bodies.thighL,
-            targetVx,
-            null,
-            targetVz,
-            loco.legFollowRate,
-            240 * muscleScale,
-            dt,
-          );
-          applyLinearVelocityAssist(
-            this.bodies.thighR,
-            targetVx,
-            null,
-            targetVz,
-            loco.legFollowRate,
-            240 * muscleScale,
-            dt,
-          );
+          const rateL = loco.swingLegFollowRate * (0.78 + 0.32 * swingWeightL);
+          const rateR = loco.swingLegFollowRate * (0.78 + 0.32 * swingWeightR);
+          const swingBoostL = 1 + 0.04 * swingWeightL;
+          const swingBoostR = 1 + 0.04 * swingWeightR;
+
+          applyLinearVelocityAssist(this.bodies.thighL, targetVx, null, targetVz, rateL, 260 * muscleScale, dt);
+          applyLinearVelocityAssist(this.bodies.thighR, targetVx, null, targetVz, rateR, 260 * muscleScale, dt);
           applyLinearVelocityAssist(
             this.bodies.lowerLegL,
-            targetVx,
+            targetVx * swingBoostL,
             null,
-            targetVz,
-            loco.legFollowRate * 0.85,
-            150 * muscleScale,
+            targetVz * swingBoostL,
+            rateL * 0.88,
+            135 * muscleScale,
             dt,
           );
           applyLinearVelocityAssist(
             this.bodies.lowerLegR,
-            targetVx,
+            targetVx * swingBoostR,
             null,
-            targetVz,
-            loco.legFollowRate * 0.85,
-            150 * muscleScale,
+            targetVz * swingBoostR,
+            rateR * 0.88,
+            135 * muscleScale,
             dt,
           );
           applyLinearVelocityAssist(
             this.bodies.footL,
-            targetVx,
+            targetVx * swingBoostL,
             null,
-            targetVz,
-            loco.legFollowRate * 0.85,
-            82 * muscleScale,
+            targetVz * swingBoostL,
+            rateL * 0.86,
+            64 * muscleScale,
             dt,
           );
           applyLinearVelocityAssist(
             this.bodies.footR,
-            targetVx,
+            targetVx * swingBoostR,
             null,
-            targetVz,
-            loco.legFollowRate * 0.85,
-            82 * muscleScale,
+            targetVz * swingBoostR,
+            rateR * 0.86,
+            64 * muscleScale,
             dt,
           );
         }
@@ -843,32 +1006,37 @@ export class ActiveRagdoll {
       this.bodies.chest.applyImpulse({ x: lungeX * 0.7, y: 34, z: lungeZ * 0.7 }, true);
     }
 
-    // Speed-matched directional leg stride + pivot stepping during turns
-    if (isMoving && grounded) {
-      this.walkPhase += dt * (4.2 + this.smoothedMoveMag * 7.2);
-    } else if (isTurningInPlace && grounded) {
-      this.walkPhase += dt * Math.min(8.0, Math.abs(turnRate) * 2.2);
-    } else {
-      const nearestHalfPi = Math.round(this.walkPhase / Math.PI) * Math.PI;
-      this.walkPhase = THREE.MathUtils.lerp(this.walkPhase, nearestHalfPi, Math.min(1, dt * 8));
-    }
-
-    const turnStepAmp = isTurningInPlace ? Math.min(0.18, Math.abs(turnRate) * 0.035) : 0;
-    const strideAmp = this.smoothedMoveMag * 0.44 + turnStepAmp;
-    const sL = Math.sin(this.walkPhase) * strideAmp;
-    const sR = Math.sin(this.walkPhase + Math.PI) * strideAmp;
-
-    const dirFwd = isMoving ? localFwd : isTurningInPlace ? 0.65 : 0;
+    // Phase-aware leg joint targets (mid-swing knee clearance, heel-strike extension, strafe knee lift, pivot steps)
+    const speedNorm = Math.min(1, smoothedSpeed / loco.runSpeed);
+    const strideAngleAmp = (0.24 + speedNorm * 0.24) * this.strideBlend;
+    const stepClearanceScale = loco.stepHeight / 0.135;
+    const dirFwd = isMoving ? localFwd : 0;
     const dirRight = isMoving ? localRight : 0;
+    const dirMag = Math.min(1, Math.hypot(dirFwd, dirRight));
+    const turnSign = isTurningInPlace ? Math.sign(turnRate) : 0;
 
-    // Standing slight athletic knee flex keeps ankles directly beneath hips
-    const baseThighPitch = 0.08;
-    const baseKneeFlex = -0.16;
+    // Combat-ready bent-knee & staggered foot stance blends smoothly into active stride
+    const idleWeight = 1 - Math.min(1, this.strideBlend);
+    const baseThighPitchL = 0.08 + 0.15 * idleWeight;
+    const baseKneeFlexL = -0.16 - 0.18 * idleWeight;
+    const idleFootYawL = 0.06 * idleWeight;
 
-    // Left leg
-    const thighLPitch = baseThighPitch + sL * dirFwd;
-    const thighLRoll = 0.035 - sL * dirRight * 0.52;
-    _euler.set(thighLPitch, activeYaw, thighLRoll);
+    const baseThighPitchR = 0.08 - 0.12 * idleWeight;
+    const baseKneeFlexR = -0.16 - 0.13 * idleWeight;
+    const idleFootYawR = -0.14 * idleWeight;
+
+    // --- LEFT LEG (Lead Stance Foot) ---
+    const rawCL = Math.max(0, cL);
+    const swingLiftL = rawCL * rawCL * (3 - 2 * rawCL) * this.strideBlend;
+    const pivotYawL = isTurningInPlace ? turnSign * sL * 0.16 * this.strideBlend : 0;
+    const thighLPitch =
+      baseThighPitchL +
+      sL * strideAngleAmp * dirFwd +
+      (isTurningInPlace ? swingLiftL * 0.14 : 0);
+    const thighLRoll = 0.035 - 0.055 * idleWeight - sL * strideAngleAmp * 1.05 * dirRight;
+    const legYawL = wrapAngleRad(activeYaw + pivotYawL + idleFootYawL);
+
+    _euler.set(thighLPitch, legYawL, thighLRoll);
     _thighLQuat.setFromEuler(_euler);
     applyOrientationPDTorque(
       this.bodies.thighL,
@@ -880,9 +1048,14 @@ export class ActiveRagdoll {
       muscleScale,
     );
 
+    const kneeBendSwingL =
+      swingLiftL * (0.3 + 0.14 * speedNorm) * stepClearanceScale * (isTurningInPlace ? 0.65 : Math.max(0.55, dirMag));
     const kneeFlexL =
-      baseKneeFlex - Math.max(0, sL * dirFwd) * 0.56 - Math.abs(sL * dirRight) * 0.35;
-    _euler.set(thighLPitch + kneeFlexL, activeYaw, thighLRoll * 0.5);
+      baseKneeFlexL -
+      kneeBendSwingL -
+      Math.max(0, -sL * dirFwd) * 0.1 * this.strideBlend;
+    const shinLPitch = thighLPitch + kneeFlexL;
+    _euler.set(shinLPitch, legYawL, thighLRoll * 0.5);
     _shinLQuat.setFromEuler(_euler);
     applyOrientationPDTorque(
       this.bodies.lowerLegL,
@@ -894,8 +1067,10 @@ export class ActiveRagdoll {
       muscleScale,
     );
 
-    const footLPitch = isMoving || isTurningInPlace ? Math.max(0, sL * dirFwd) * 0.34 : 0;
-    _euler.set(footLPitch, activeYaw, 0);
+    const desiredFootLPitch =
+      swingLiftL * 0.16 + Math.max(0, sL * dirFwd) * 0.08 * this.strideBlend;
+    const footLPitch = THREE.MathUtils.clamp(desiredFootLPitch, shinLPitch - 0.3, shinLPitch + 0.38);
+    _euler.set(footLPitch, legYawL, 0);
     _thighLQuat.setFromEuler(_euler);
     applyOrientationPDTorque(
       this.bodies.footL,
@@ -907,10 +1082,18 @@ export class ActiveRagdoll {
       muscleScale,
     );
 
-    // Right leg
-    const thighRPitch = baseThighPitch + sR * dirFwd;
-    const thighRRoll = -0.035 - sR * dirRight * 0.52;
-    _euler.set(thighRPitch, activeYaw, thighRRoll);
+    // --- RIGHT LEG (Rear Drive Foot) ---
+    const rawCR = Math.max(0, cR);
+    const swingLiftR = rawCR * rawCR * (3 - 2 * rawCR) * this.strideBlend;
+    const pivotYawR = isTurningInPlace ? turnSign * sR * 0.16 * this.strideBlend : 0;
+    const thighRPitch =
+      baseThighPitchR +
+      sR * strideAngleAmp * dirFwd +
+      (isTurningInPlace ? swingLiftR * 0.14 : 0);
+    const thighRRoll = -0.035 + 0.055 * idleWeight - sR * strideAngleAmp * 1.05 * dirRight;
+    const legYawR = wrapAngleRad(activeYaw + pivotYawR + idleFootYawR);
+
+    _euler.set(thighRPitch, legYawR, thighRRoll);
     _thighRQuat.setFromEuler(_euler);
     applyOrientationPDTorque(
       this.bodies.thighR,
@@ -922,9 +1105,14 @@ export class ActiveRagdoll {
       muscleScale,
     );
 
+    const kneeBendSwingR =
+      swingLiftR * (0.3 + 0.14 * speedNorm) * stepClearanceScale * (isTurningInPlace ? 0.65 : Math.max(0.55, dirMag));
     const kneeFlexR =
-      baseKneeFlex - Math.max(0, sR * dirFwd) * 0.56 - Math.abs(sR * dirRight) * 0.35;
-    _euler.set(thighRPitch + kneeFlexR, activeYaw, thighRRoll * 0.5);
+      baseKneeFlexR -
+      kneeBendSwingR -
+      Math.max(0, -sR * dirFwd) * 0.1 * this.strideBlend;
+    const shinRPitch = thighRPitch + kneeFlexR;
+    _euler.set(shinRPitch, legYawR, thighRRoll * 0.5);
     _shinRQuat.setFromEuler(_euler);
     applyOrientationPDTorque(
       this.bodies.lowerLegR,
@@ -936,8 +1124,10 @@ export class ActiveRagdoll {
       muscleScale,
     );
 
-    const footRPitch = isMoving || isTurningInPlace ? Math.max(0, sR * dirFwd) * 0.34 : 0;
-    _euler.set(footRPitch, activeYaw, 0);
+    const desiredFootRPitch =
+      swingLiftR * 0.16 + Math.max(0, sR * dirFwd) * 0.08 * this.strideBlend;
+    const footRPitch = THREE.MathUtils.clamp(desiredFootRPitch, shinRPitch - 0.3, shinRPitch + 0.38);
+    _euler.set(footRPitch, legYawR, 0);
     _thighRQuat.setFromEuler(_euler);
     applyOrientationPDTorque(
       this.bodies.footR,

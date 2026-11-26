@@ -6,7 +6,7 @@
 | :--- | :--- | :--- |
 | Move | `W` `A` `S` `D` | Acceleration-based physical locomotion relative to camera |
 | Camera Look | `Mouse` (Pointer Lock in combat) | Smooth camera orbit and fighter turning |
-| Direct Weapon Control & Swing | `Left Mouse Button` (Hold + Move) | Locks camera and steers hand & weapon directly along mouse movement; double-tap or `F` to thrust |
+| Direct Weapon Control & Swing | `Left Mouse Button` (Hold + Move, or Quick Tap) | Hold + Move locks camera and steers hand & weapon directly with natural post-release follow-through; quick click triggers a crisp slash; double-tap or `F` to thrust |
 | Free Weapon Aim / Stance | `Left Alt` (Hold) or `V` (Toggle) + `Mouse` | Locks camera for smooth slow/precise weapon placement without attacking |
 | Rotate Blade Edge / Wrist | `Mouse Wheel` or `Middle Mouse` (Hold + Move) | Smoothly rotates wrist roll and weapon pitch directly |
 | Defensive Guard / Parry Angle | `Right Mouse Button` (Hold + Move) | Raises shield or weapon guard and lets you angle the block high/low/left/right |

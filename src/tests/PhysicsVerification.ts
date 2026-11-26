@@ -788,6 +788,274 @@ export async function runPhysicsVerificationSuite(): Promise<PhysicsTestCaseResu
     physics.dispose();
   }
 
+  // TEST L — Gait Transitions, Chest-Local No-Lag Arm Tracking & Visual Variants
+  {
+    const t0 = performance.now();
+    const scene = new THREE.Scene();
+    const physics = new PhysicsWorld(60, 1);
+    createTestArenaFloor(physics);
+    const { fighter, weapons } = createTestFighter(physics, scene, 0, true);
+
+    const idleIntent = makeIntent(0, 0, 0);
+    for (let i = 0; i < 30; i++) {
+      physics.step(1 / 60, (dt) => fighter.updatePhysics(dt, idleIntent), (dt) => weapons.forEach((w) => w.updateKinematics(dt)));
+    }
+    const idleState = fighter.gaitState;
+
+    // 1. Full-speed run forward -> verify idle -> starting -> running
+    const runIntent = makeIntent(0, -1, 0);
+    let sawStarting = false;
+    let sawRunning = false;
+    for (let i = 0; i < 60; i++) {
+      physics.step(1 / 60, (dt) => fighter.updatePhysics(dt, runIntent), (dt) => weapons.forEach((w) => w.updateKinematics(dt)));
+      if (fighter.gaitState === 'starting') sawStarting = true;
+      if (fighter.gaitState === 'running') sawRunning = true;
+    }
+
+    // 2. Precision walk with active weapon manipulation -> verify walking + zero chest-local hand lag
+    const runArmIntent = makeIntent(0, -1, 0);
+    runArmIntent.arm.weaponManipActive = true;
+    runArmIntent.arm.swingX = 0.25;
+    runArmIntent.arm.swingY = 0.15;
+
+    let sawWalking = false;
+    let minHandAheadChest = Infinity;
+    for (let i = 0; i < 60; i++) {
+      physics.step(1 / 60, (dt) => fighter.updatePhysics(dt, runArmIntent), (dt) => weapons.forEach((w) => w.updateKinematics(dt)));
+      if (fighter.gaitState === 'walking') sawWalking = true;
+      if (i > 15) {
+        const chestP = fighter.bodies.chest.translation();
+        const handP = fighter.bodies.handR.translation();
+        const fwd = fighter.getForwardDir();
+        const ahead = (handP.x - chestP.x) * fwd.x + (handP.z - chestP.z) * fwd.z;
+        minHandAheadChest = Math.min(minHandAheadChest, ahead);
+      }
+    }
+
+    let sawStopping = false;
+    for (let i = 0; i < 90; i++) {
+      physics.step(1 / 60, (dt) => fighter.updatePhysics(dt, idleIntent), (dt) => weapons.forEach((w) => w.updateKinematics(dt)));
+      if (fighter.gaitState === 'stopping') sawStopping = true;
+    }
+    const settledState = fighter.gaitState;
+
+    // Verify all 5 helm/face/armor variants instantiate cleanly in Node & browser paths
+    const styles: Array<{
+      helmStyle: 'barbute' | 'spangenhelm' | 'kettle' | 'sallet' | 'open';
+      beardStyle: 'none' | 'stubble' | 'goatee' | 'full';
+      armorTier: 'light' | 'medium' | 'heavy';
+    }> = [
+      { helmStyle: 'barbute', beardStyle: 'goatee', armorTier: 'heavy' },
+      { helmStyle: 'spangenhelm', beardStyle: 'full', armorTier: 'medium' },
+      { helmStyle: 'kettle', beardStyle: 'stubble', armorTier: 'light' },
+      { helmStyle: 'sallet', beardStyle: 'none', armorTier: 'heavy' },
+      { helmStyle: 'open', beardStyle: 'full', armorTier: 'medium' },
+    ];
+    let minHeadMeshes = Infinity;
+    for (let idx = 0; idx < styles.length; idx++) {
+      const f = new ActiveRagdoll(physics, scene, {
+        name: `Variant_${idx}`,
+        isPlayer: false,
+        slotIndex: 1,
+        spawnPos: new THREE.Vector3(3 + idx * 1.5, 0, 0),
+        facingYaw: 0,
+        appearance: {
+          tunicColor: 0x5c1928,
+          metalTint: 0xd0d6de,
+          ...styles[idx],
+        },
+      });
+      minHeadMeshes = Math.min(minHeadMeshes, f.meshes.head.children.length);
+      f.dispose();
+    }
+
+    const passed =
+      idleState === 'idle' &&
+      sawStarting &&
+      sawRunning &&
+      sawWalking &&
+      sawStopping &&
+      settledState === 'idle' &&
+      minHandAheadChest > 0.25 &&
+      minHeadMeshes >= 15 &&
+      !hasAnyNonFinite(fighter);
+
+    results.push({
+      name: 'TEST L — Gait State Transitions, No-Lag Chest-Local Arm & Visual Variants',
+      passed,
+      details: `states=(${idleState}->starting:${sawStarting}->running:${sawRunning}->walking:${sawWalking}->stopping:${sawStopping}->${settledState}), minHandAhead=${minHandAheadChest.toFixed(2)}m, minHeadParts=${minHeadMeshes}`,
+      durationMs: Number((performance.now() - t0).toFixed(2)),
+    });
+
+    fighter.dispose();
+    weapons.forEach((w) => w.dispose(physics, scene));
+    physics.dispose();
+  }
+
+  // TEST M — Aggressive Combat-Ready Stance, Weapon-Specific Guards & Upright Shield Orientation
+  {
+    const t0 = performance.now();
+    const scene = new THREE.Scene();
+    const physics = new PhysicsWorld(60, 1);
+    createTestArenaFloor(physics);
+
+    const idleIntent = makeIntent(0, 0, 0);
+
+    // 1. Arming sword + shield default ready stance
+    const { fighter: knight } = createTestFighter(physics, scene, 0, false);
+    const armingSword = new WeaponInstance(physics, scene, 'arming_sword', new THREE.Vector3(0.3, 1.0, 0));
+    const shield = new WeaponInstance(physics, scene, 'shield', new THREE.Vector3(-0.3, 1.0, 0));
+    knight.armController.grabWeapon(physics, armingSword, 'right');
+    knight.armController.grabWeapon(physics, shield, 'left');
+
+    for (let i = 0; i < 90; i++) {
+      physics.step(
+        1 / 60,
+        (dt) => knight.updatePhysics(dt, idleIntent),
+        (dt) => {
+          armingSword.updateKinematics(dt);
+          shield.updateKinematics(dt);
+        },
+      );
+    }
+
+    const pelvisP = knight.bodies.pelvis.translation();
+    const footLP = knight.bodies.footL.translation();
+    const footRP = knight.bodies.footR.translation();
+    const handRP = knight.bodies.handR.translation();
+    const shieldP = shield.body.translation();
+    const shieldR = shield.body.rotation();
+    const shieldNormalWorld = new THREE.Vector3(0, 0, 1).applyQuaternion(
+      new THREE.Quaternion(shieldR.x, shieldR.y, shieldR.z, shieldR.w),
+    );
+    const swordRaisedDeltaY = armingSword.tipWorld.y - handRP.y;
+    const swordUpDot = armingSword.thrustAxisWorld.y;
+    const swordFwdDot = -armingSword.thrustAxisWorld.z;
+    const shieldAbovePelvis = shieldP.y - pelvisP.y;
+    const shieldUpDot = shield.thrustAxisWorld.y;
+    const shieldFwdFaceDot = -shieldNormalWorld.z;
+    const kneeStaggerZ = footRP.z - footLP.z; // + when lead left foot is ahead (-Z) of rear right foot (+Z)
+    const knightChestLocalHandR = new THREE.Vector3(handRP.x, handRP.y, handRP.z)
+      .sub(new THREE.Vector3(knight.bodies.chest.translation().x, knight.bodies.chest.translation().y, knight.bodies.chest.translation().z));
+
+    // 2. Smooth transitions: combat stance -> walk -> attack -> defend -> release back to combat stance
+    const walkIntent = makeIntent(0, -1, 0);
+    for (let i = 0; i < 36; i++) {
+      physics.step(1 / 60, (dt) => knight.updatePhysics(dt, walkIntent), (dt) => {
+        armingSword.updateKinematics(dt);
+        shield.updateKinematics(dt);
+      });
+    }
+    const atkIntent = makeIntent(0, 0, 0);
+    atkIntent.arm.attackHeld = true;
+    atkIntent.arm.swingX = -0.5;
+    atkIntent.arm.swingY = 0.2;
+    for (let i = 0; i < 24; i++) {
+      physics.step(1 / 60, (dt) => knight.updatePhysics(dt, atkIntent), (dt) => {
+        armingSword.updateKinematics(dt);
+        shield.updateKinematics(dt);
+      });
+    }
+    const defIntent = makeIntent(0, 0, 0);
+    defIntent.arm.defendHeld = true;
+    for (let i = 0; i < 24; i++) {
+      physics.step(1 / 60, (dt) => knight.updatePhysics(dt, defIntent), (dt) => {
+        armingSword.updateKinematics(dt);
+        shield.updateKinematics(dt);
+      });
+    }
+    const defShieldFwd = -new THREE.Vector3(0, 0, 1)
+      .applyQuaternion(new THREE.Quaternion(shield.body.rotation().x, shield.body.rotation().y, shield.body.rotation().z, shield.body.rotation().w))
+      .z;
+    for (let i = 0; i < 75; i++) {
+      physics.step(1 / 60, (dt) => knight.updatePhysics(dt, idleIntent), (dt) => {
+        armingSword.updateKinematics(dt);
+        shield.updateKinematics(dt);
+      });
+    }
+    const recoveredTipDeltaY = armingSword.tipWorld.y - knight.bodies.handR.translation().y;
+    const knightJointErr = knight.getMaxJointSeparation();
+
+    // 3. Weapon-specific guard differences across longsword, battle_axe, and mace
+    const measureWeaponGuard = (wType: 'longsword' | 'battle_axe' | 'mace', spawnX: number) => {
+      const f = new ActiveRagdoll(physics, scene, {
+        name: `Guard_${wType}`,
+        isPlayer: false,
+        slotIndex: 1,
+        spawnPos: new THREE.Vector3(spawnX, 0, 0),
+        facingYaw: 0,
+        appearance: { tunicColor: 0x5c1928, metalTint: 0xd0d6de, armorTier: 'medium' },
+      });
+      const w = new WeaponInstance(physics, scene, wType, new THREE.Vector3(spawnX + 0.3, 1.0, 0));
+      f.armController.grabWeapon(physics, w, 'right');
+      for (let i = 0; i < 90; i++) {
+        physics.step(1 / 60, (dt) => f.updatePhysics(dt, idleIntent), (dt) => w.updateKinematics(dt));
+      }
+      const h = f.bodies.handR.translation();
+      const c = f.bodies.chest.translation();
+      const res = {
+        tipDeltaY: w.tipWorld.y - h.y,
+        upDot: w.thrustAxisWorld.y,
+        fwdDot: -w.thrustAxisWorld.z,
+        handLocal: new THREE.Vector3(h.x - c.x, h.y - c.y, h.z - c.z),
+        jointErr: f.getMaxJointSeparation(),
+        fallen: f.isKnockedDown,
+      };
+      f.dispose();
+      w.dispose(physics, scene);
+      return res;
+    };
+
+    const longswordGuard = measureWeaponGuard('longsword', 3.0);
+    const axeGuard = measureWeaponGuard('battle_axe', 6.0);
+    const maceGuard = measureWeaponGuard('mace', 9.0);
+
+    const longswordVsSwordDiff = longswordGuard.handLocal.distanceTo(knightChestLocalHandR);
+    const axeVsLongswordDiff = Math.abs(axeGuard.upDot - longswordGuard.upDot) + axeGuard.handLocal.distanceTo(longswordGuard.handLocal);
+
+    const passed =
+      !knight.isKnockedDown &&
+      !longswordGuard.fallen &&
+      !axeGuard.fallen &&
+      !maceGuard.fallen &&
+      pelvisP.y > 0.84 &&
+      pelvisP.y < 0.905 &&
+      kneeStaggerZ > 0.04 &&
+      swordRaisedDeltaY > 0.14 &&
+      swordUpDot > 0.35 &&
+      swordFwdDot > 0.25 &&
+      shieldAbovePelvis > 0.34 &&
+      shieldUpDot > 0.72 &&
+      shieldFwdFaceDot > 0.55 &&
+      defShieldFwd > 0.65 &&
+      recoveredTipDeltaY > 0.14 &&
+      longswordGuard.tipDeltaY > 0.18 &&
+      longswordGuard.upDot > 0.35 &&
+      axeGuard.tipDeltaY > 0.18 &&
+      axeGuard.upDot > 0.35 &&
+      maceGuard.tipDeltaY > 0.14 &&
+      maceGuard.upDot > 0.35 &&
+      longswordVsSwordDiff > 0.04 &&
+      axeVsLongswordDiff > 0.04 &&
+      knightJointErr < 0.035 &&
+      longswordGuard.jointErr < 0.035 &&
+      axeGuard.jointErr < 0.035 &&
+      maceGuard.jointErr < 0.035 &&
+      !hasAnyNonFinite(knight);
+
+    results.push({
+      name: 'TEST M — Aggressive Combat-Ready Stance, Weapon Guards & Upright Shield',
+      passed,
+      details: `pelvisY=${pelvisP.y.toFixed(3)}m, footStagger=${kneeStaggerZ.toFixed(3)}m, sword(dY=${swordRaisedDeltaY.toFixed(2)}, up=${swordUpDot.toFixed(2)}, fwd=${swordFwdDot.toFixed(2)}), shield(abovePelvis=${shieldAbovePelvis.toFixed(2)}, up=${shieldUpDot.toFixed(2)}, faceFwd=${shieldFwdFaceDot.toFixed(2)}), longUp=${longswordGuard.upDot.toFixed(2)}, axeUp=${axeGuard.upDot.toFixed(2)}, maceUp=${maceGuard.upDot.toFixed(2)}, poseDiff=${longswordVsSwordDiff.toFixed(2)}m`,
+      durationMs: Number((performance.now() - t0).toFixed(2)),
+    });
+
+    knight.dispose();
+    armingSword.dispose(physics, scene);
+    shield.dispose(physics, scene);
+    physics.dispose();
+  }
+
   return results;
 }
 

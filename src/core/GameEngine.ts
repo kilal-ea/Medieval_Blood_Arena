@@ -143,7 +143,7 @@ export class GameEngine {
     this.renderer.setSize(this.mountEl.clientWidth || window.innerWidth, this.mountEl.clientHeight || window.innerHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = 1.12;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.mountEl.innerHTML = '';
     this.mountEl.appendChild(this.renderer.domElement);
@@ -162,11 +162,11 @@ export class GameEngine {
     this.camera = new THREE.PerspectiveCamera(58, aspect, 0.1, 220);
     this.camRig = new ThirdPersonCamera(this.camera);
 
-    // Warm/cool 3-point medieval sunlight rig
-    const hemi = new THREE.HemisphereLight(0x9eb8d9, 0x4d3a27, 0.85);
+    // Warm/cool 3-point medieval sunlight + ground-bounce fill rig
+    const hemi = new THREE.HemisphereLight(0xaec8e8, 0x56412d, 0.92);
     this.scene.add(hemi);
 
-    this.keyLight = new THREE.DirectionalLight(0xffdfb0, 2.3);
+    this.keyLight = new THREE.DirectionalLight(0xffe4be, 2.45);
     this.keyLight.position.set(14, 22, 10);
     this.keyLight.castShadow = true;
     this.keyLight.shadow.mapSize.set(1024, 1024);
@@ -178,12 +178,17 @@ export class GameEngine {
     this.keyLight.shadow.camera.top = d;
     this.keyLight.shadow.camera.bottom = -d;
     this.keyLight.shadow.bias = -0.0005;
-    this.keyLight.shadow.normalBias = 0.025;
+    this.keyLight.shadow.normalBias = 0.02;
+    this.keyLight.shadow.radius = 2.5;
     this.scene.add(this.keyLight);
 
-    const rimLight = new THREE.DirectionalLight(0x8bb2e6, 0.75);
+    const rimLight = new THREE.DirectionalLight(0x94baf0, 0.9);
     rimLight.position.set(-12, 10, -14);
     this.scene.add(rimLight);
+
+    const bounceFill = new THREE.DirectionalLight(0xd9b38c, 0.45);
+    bounceFill.position.set(-10, 6, 12);
+    this.scene.add(bounceFill);
 
     this.textures = createProceduralTextures(
       Math.min(8, this.renderer.capabilities.getMaxAnisotropy()),
@@ -253,7 +258,16 @@ export class GameEngine {
       slotIndex: 0,
       spawnPos: new THREE.Vector3(-1.35, 0, 0),
       facingYaw: -Math.PI * 0.5,
-      appearance: { tunicColor: 0x7a1c1c, metalTint: 0xd0d6de, armorTier: 'heavy' },
+      appearance: {
+        tunicColor: 0x7a1c1c,
+        secondaryColor: 0xcab06a,
+        metalTint: 0xd0d6de,
+        armorTier: 'heavy',
+        helmStyle: 'sallet',
+        skinTone: 0xd4a280,
+        hairColor: 0x2f1d13,
+        beardStyle: 'goatee',
+      },
     });
     const wHeroR = new WeaponInstance(this.physics, this.scene, 'longsword', new THREE.Vector3(-1.1, 1.1, 0));
     const wHeroL = new WeaponInstance(this.physics, this.scene, 'shield', new THREE.Vector3(-1.5, 1.1, 0), undefined, 0x7a1c1c);
@@ -269,7 +283,16 @@ export class GameEngine {
       slotIndex: 1,
       spawnPos: new THREE.Vector3(1.35, 0, 0),
       facingYaw: Math.PI * 0.5,
-      appearance: { tunicColor: 0x243b5e, metalTint: 0xbac2cc, armorTier: 'heavy' },
+      appearance: {
+        tunicColor: 0x243b5e,
+        secondaryColor: 0xbca47a,
+        metalTint: 0xbac2cc,
+        armorTier: 'heavy',
+        helmStyle: 'barbute',
+        skinTone: 0xc5916e,
+        hairColor: 0x1c1714,
+        beardStyle: 'full',
+      },
     });
     const wRivalR = new WeaponInstance(this.physics, this.scene, 'battle_axe', new THREE.Vector3(1.1, 1.1, 0));
     rival.armController.grabWeapon(this.physics, wRivalR, 'right');
@@ -320,8 +343,13 @@ export class GameEngine {
       facingYaw: 0,
       appearance: {
         tunicColor: 0x7c1d1d,
+        secondaryColor: 0xd4b978,
         metalTint: 0xd2d8e0,
         armorTier: 'heavy',
+        helmStyle: 'sallet',
+        skinTone: 0xd4a382,
+        hairColor: 0x3b2416,
+        beardStyle: 'stubble',
       },
       maxHealth: mode === 'survival' ? 120 : 100,
     });
@@ -531,7 +559,7 @@ export class GameEngine {
                 swingX: 0,
                 swingY: 0,
                 attackHeld: false,
-                defendHeld: i === 0,
+                defendHeld: false,
                 thrustActive: false,
                 leftPunchActive: false,
               },
@@ -563,19 +591,22 @@ export class GameEngine {
     if (this.playerLeftPunchTimer > 0) this.playerLeftPunchTimer = Math.max(0, this.playerLeftPunchTimer - dt);
     if (this.playerWhooshCooldown > 0) this.playerWhooshCooldown = Math.max(0, this.playerWhooshCooldown - dt);
 
-    if (snap.attackJustPressed && !this.player.isDead) {
-      if (snap.swingSpeed < 0.12 && !snap.weaponManipActive) {
-        const tapDir = snap.swingX > 0.08 ? -1 : snap.swingX < -0.08 ? 1 : Math.random() > 0.5 ? 1 : -1;
-        this.player.armController.triggerAutoSwing(tapDir, 0.24);
-      } else {
-        this.player.armController.cancelAutoSwing();
-      }
+    if (snap.attackQuickTap && !snap.weaponManipActive && !this.player.isDead) {
+      const tapDir = snap.swingX > 0.08 ? -1 : snap.swingX < -0.08 ? 1 : Math.random() > 0.5 ? 1 : -1;
+      this.player.armController.triggerAutoSwing(tapDir, 0.24);
       if (this.playerWhooshCooldown <= 0) {
         this.audio.playWhoosh(6.5);
         this.playerWhooshCooldown = 0.28;
       }
-    } else if (snap.swingSpeed >= 0.12 || snap.weaponManipActive) {
+    } else if (
+      snap.weaponManipActive ||
+      (snap.attackHeld && snap.swingSpeed >= 0.08)
+    ) {
       this.player.armController.cancelAutoSwing();
+      if (snap.attackHeld && snap.swingSpeed >= 0.48 && this.playerWhooshCooldown <= 0 && !this.player.isDead) {
+        this.audio.playWhoosh(5.8 + Math.min(3.5, snap.swingSpeed * 2.2));
+        this.playerWhooshCooldown = 0.28;
+      }
     }
 
     // Physical hand grab / release controls (Q = left hand, E = right hand, R = recover/reset)
